@@ -1,0 +1,82 @@
+name: Build AnyPS5 Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout AnyPS5
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        shell: powershell
+        run: |
+          choco install ninja -y
+
+      - name: Download MinGW-w64 GCC 15.2.0
+        shell: powershell
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-ucrt-posix-seh-gcc-15.2.0-mingw-w64-14.0.0-r7.zip" `
+            -OutFile mingw.zip
+
+          Expand-Archive mingw.zip -DestinationPath C:\mingw
+
+      - name: Find MinGW
+        shell: powershell
+        run: |
+          $bin = Get-ChildItem C:\mingw -Directory -Recurse |
+            Where-Object { Test-Path "$($_.FullName)\bin\gcc.exe" } |
+            Select-Object -First 1
+
+          if (-not $bin) {
+            Write-Error "MinGW GCC was not found"
+            exit 1
+          }
+
+          echo "MINGW_BIN=$($bin.FullName)\bin" >> $env:GITHUB_ENV
+          echo "$($bin.FullName)\bin" >> $env:GITHUB_PATH
+
+      - name: Check compiler
+        shell: powershell
+        run: |
+          gcc --version
+          g++ --version
+          cmake --version
+          ninja --version
+
+      - name: Configure
+        shell: powershell
+        run: |
+          cmake -S . -B build `
+            -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=gcc `
+            -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build
+        shell: powershell
+        run: |
+          cmake --build build --parallel
+
+      - name: Package
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+
+          Get-ChildItem build -Recurse -Filter *.exe |
+            Copy-Item -Destination release -Force
+
+          Get-ChildItem build -Recurse -Filter *.prx |
+            Copy-Item -Destination release -Force
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyPS5-Windows
+          path: release/
