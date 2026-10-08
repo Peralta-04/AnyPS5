@@ -18,53 +18,97 @@ jobs:
         run: |
           choco install ninja -y
 
-      - name: Download MinGW-w64 GCC 15.2.0
+      - name: Download required MinGW GCC 15.2.0
         shell: powershell
         run: |
-          Invoke-WebRequest `
-            -Uri "https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-ucrt-posix-seh-gcc-15.2.0-mingw-w64-14.0.0-r7.zip" `
-            -OutFile mingw.zip
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases/tags/15.2.0posix-14.0.0-ucrt-r7" `
+            -Headers @{ "User-Agent" = "GitHub-Actions" }
 
-          Expand-Archive mingw.zip -DestinationPath C:\mingw
-
-      - name: Find MinGW
-        shell: powershell
-        run: |
-          $bin = Get-ChildItem C:\mingw -Directory -Recurse |
-            Where-Object { Test-Path "$($_.FullName)\bin\gcc.exe" } |
+          $asset = $release.assets |
+            Where-Object {
+              $_.name -eq "winlibs-x86_64-ucrt-posix-seh-gcc-15.2.0-mingw-w64-14.0.0-r7.zip"
+            } |
             Select-Object -First 1
 
-          if (-not $bin) {
-            Write-Error "MinGW GCC was not found"
-            exit 1
+          if (-not $asset) {
+            Write-Host "Available assets:"
+            $release.assets | ForEach-Object { Write-Host $_.name }
+            throw "Required MinGW asset was not found."
           }
 
-          echo "MINGW_BIN=$($bin.FullName)\bin" >> $env:GITHUB_ENV
-          echo "$($bin.FullName)\bin" >> $env:GITHUB_PATH
+          Write-Host "Downloading:"
+          Write-Host $asset.browser_download_url
+
+          Invoke-WebRequest `
+            -Uri $asset.browser_download_url `
+            -OutFile "$env:RUNNER_TEMP\mingw.zip"
+
+          Expand-Archive `
+            -Path "$env:RUNNER_TEMP\mingw.zip" `
+            -DestinationPath "$env:RUNNER_TEMP\mingw"
+
+      - name: Locate MinGW
+        shell: powershell
+        run: |
+          $gcc = Get-ChildItem `
+            "$env:RUNNER_TEMP\mingw" `
+            -Filter gcc.exe `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $gcc) {
+            Get-ChildItem "$env:RUNNER_TEMP\mingw" -Recurse | Select-Object -First 50
+            throw "gcc.exe not found"
+          }
+
+          $mingwBin = $gcc.Directory.FullName
+
+          Write-Host "MinGW bin:"
+          Write-Host $mingwBin
+
+          Add-Content $env:GITHUB_PATH $mingwBin
+          Add-Content $env:GITHUB_ENV "MINGW_BIN=$mingwBin"
 
       - name: Check compiler
         shell: powershell
         run: |
           gcc --version
           g++ --version
-          cmake --version
           ninja --version
+          cmake --version
 
-      - name: Configure
+      - name: Configure AnyPS5
         shell: powershell
         run: |
-          cmake -S . -B build `
+          cmake `
+            -S . `
+            -B build `
             -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=gcc `
             -DCMAKE_CXX_COMPILER=g++
 
-      - name: Build
+      - name: Build AnyPS5
         shell: powershell
         run: |
           cmake --build build --parallel
 
-      - name: Package
+      - name: Build libraries
+        shell: powershell
+        run: |
+          cmake --build build --target libs --parallel
+
+      - name: Show build output
+        shell: powershell
+        run: |
+          Write-Host "===== EXE FILES ====="
+          Get-ChildItem build -Recurse -Filter *.exe
+
+          Write-Host "===== PRX FILES ====="
+          Get-ChildItem build -Recurse -Filter *.prx
+
+      - name: Package build
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path release
@@ -75,8 +119,13 @@ jobs:
           Get-ChildItem build -Recurse -Filter *.prx |
             Copy-Item -Destination release -Force
 
-      - name: Upload Windows build
+          Compress-Archive `
+            -Path release\* `
+            -DestinationPath AnyPS5-Windows.zip `
+            -Force
+
+      - name: Upload AnyPS5 Windows build
         uses: actions/upload-artifact@v4
         with:
           name: AnyPS5-Windows
-          path: release/
+          path: AnyPS5-Windows.zip
