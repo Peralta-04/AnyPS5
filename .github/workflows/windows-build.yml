@@ -18,31 +18,41 @@ jobs:
         run: |
           choco install ninja -y
 
-      - name: Download required MinGW GCC 15.2.0
+      - name: Download MinGW GCC 15.2.0
         shell: powershell
         run: |
           $release = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases/tags/15.2.0posix-14.0.0-ucrt-r7" `
-            -Headers @{ "User-Agent" = "GitHub-Actions" }
+            -Headers @{
+              "User-Agent" = "GitHub-Actions"
+            }
 
           $asset = $release.assets |
             Where-Object {
-              $_.name -eq "winlibs-x86_64-ucrt-posix-seh-gcc-15.2.0-mingw-w64-14.0.0-r7.zip"
+              $_.name -eq "winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip"
             } |
             Select-Object -First 1
 
           if (-not $asset) {
             Write-Host "Available assets:"
-            $release.assets | ForEach-Object { Write-Host $_.name }
+            $release.assets | ForEach-Object {
+              Write-Host $_.name
+            }
+
             throw "Required MinGW asset was not found."
           }
 
-          Write-Host "Downloading:"
+          Write-Host "Found MinGW:"
+          Write-Host $asset.name
+
+          Write-Host "Download URL:"
           Write-Host $asset.browser_download_url
 
           Invoke-WebRequest `
             -Uri $asset.browser_download_url `
             -OutFile "$env:RUNNER_TEMP\mingw.zip"
+
+          Write-Host "Extracting MinGW..."
 
           Expand-Archive `
             -Path "$env:RUNNER_TEMP\mingw.zip" `
@@ -58,13 +68,18 @@ jobs:
             Select-Object -First 1
 
           if (-not $gcc) {
-            Get-ChildItem "$env:RUNNER_TEMP\mingw" -Recurse | Select-Object -First 50
-            throw "gcc.exe not found"
+            Write-Host "Contents of MinGW directory:"
+            Get-ChildItem `
+              "$env:RUNNER_TEMP\mingw" `
+              -Recurse |
+              Select-Object -First 100
+
+            throw "gcc.exe was not found."
           }
 
           $mingwBin = $gcc.Directory.FullName
 
-          Write-Host "MinGW bin:"
+          Write-Host "MinGW binary directory:"
           Write-Host $mingwBin
 
           Add-Content $env:GITHUB_PATH $mingwBin
@@ -73,10 +88,17 @@ jobs:
       - name: Check compiler
         shell: powershell
         run: |
+          Write-Host "===== GCC ====="
           gcc --version
+
+          Write-Host "===== G++ ====="
           g++ --version
-          ninja --version
+
+          Write-Host "===== CMake ====="
           cmake --version
+
+          Write-Host "===== Ninja ====="
+          ninja --version
 
       - name: Configure AnyPS5
         shell: powershell
@@ -94,37 +116,79 @@ jobs:
         run: |
           cmake --build build --parallel
 
-      - name: Build libraries
+      - name: Show build files
         shell: powershell
         run: |
-          cmake --build build --target libs --parallel
+          Write-Host "========================================"
+          Write-Host "EXE FILES"
+          Write-Host "========================================"
 
-      - name: Show build output
+          Get-ChildItem `
+            build `
+            -Recurse `
+            -Filter *.exe |
+            ForEach-Object {
+              Write-Host $_.FullName
+            }
+
+          Write-Host "========================================"
+          Write-Host "PRX FILES"
+          Write-Host "========================================"
+
+          Get-ChildItem `
+            build `
+            -Recurse `
+            -Filter *.prx |
+            ForEach-Object {
+              Write-Host $_.FullName
+            }
+
+      - name: Prepare release
         shell: powershell
         run: |
-          Write-Host "===== EXE FILES ====="
-          Get-ChildItem build -Recurse -Filter *.exe
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path release
 
-          Write-Host "===== PRX FILES ====="
-          Get-ChildItem build -Recurse -Filter *.prx
+          Write-Host "Copying EXE files..."
 
-      - name: Package build
+          Get-ChildItem `
+            build `
+            -Recurse `
+            -Filter *.exe |
+            Copy-Item `
+              -Destination release `
+              -Force
+
+          Write-Host "Copying PRX files..."
+
+          Get-ChildItem `
+            build `
+            -Recurse `
+            -Filter *.prx |
+            Copy-Item `
+              -Destination release `
+              -Force
+
+          Write-Host "Release contents:"
+
+          Get-ChildItem `
+            release `
+            -Recurse
+
+      - name: Create ZIP
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path release
-
-          Get-ChildItem build -Recurse -Filter *.exe |
-            Copy-Item -Destination release -Force
-
-          Get-ChildItem build -Recurse -Filter *.prx |
-            Copy-Item -Destination release -Force
-
           Compress-Archive `
             -Path release\* `
             -DestinationPath AnyPS5-Windows.zip `
             -Force
 
-      - name: Upload AnyPS5 Windows build
+          Write-Host "Created:"
+          Get-Item AnyPS5-Windows.zip
+
+      - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
           name: AnyPS5-Windows
